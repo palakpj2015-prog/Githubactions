@@ -2,10 +2,10 @@ from pathlib import Path
 
 
 def read_file(path):
-    file = Path(path)
+    file_path = Path(path)
 
-    if file.exists():
-        return file.read_text(errors="ignore")
+    if file_path.exists():
+        return file_path.read_text(errors="ignore")
 
     return f"{path} was not found."
 
@@ -29,7 +29,7 @@ Log size: {len(content)} characters.
 def main():
     log_files = [
         "workflow-logs.txt",
-        "terraform-plan-logs.txt",
+        "terraform-plan.log",
     ]
 
     summary_parts = []
