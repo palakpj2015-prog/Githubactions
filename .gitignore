@@ -8,3 +8,4 @@ __pycache__/
 ai-*.md
 workflow-logs.txt
 poc-context.txt
+.DS_Store
