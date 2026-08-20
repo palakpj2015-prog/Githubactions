@@ -18,12 +18,11 @@ def analyze_log(name, content):
     else:
         status = "No obvious errors detected"
 
-    return f"""### {name}
-
-**Analysis:** {status}
-
-Log size: {len(content)} characters.
-"""
+    return (
+        f"### {name}\n\n"
+        f"**Analysis:** {status}\n\n"
+        f"Log size: {len(content)} characters.\n"
+    )
 
 
 def main():
@@ -42,9 +41,30 @@ def main():
 
     context = read_file("poc-context.txt")
 
-    output = f"""# AI Pipeline Log Summary
+    output = (
+        "# AI Pipeline Log Summary\n\n"
+        "## Pipeline Context\n\n"
+        "```text\n"
+        f"{context}\n"
+        "```\n\n"
+        "## Automated Log Analysis\n\n"
+        f"{chr(10).join(summary_parts)}\n"
+        "## Overall Analysis\n\n"
+        "The GitHub Actions pipeline logs were collected and "
+        "analyzed automatically.\n\n"
+        "The analysis stage demonstrates how pipeline execution "
+        "data can be transformed into a human-readable summary "
+        "as part of the CI/CD workflow.\n\n"
+        "## Next Steps\n\n"
+        "Review any stages marked as having issues and inspect "
+        "the corresponding GitHub Actions logs for detailed "
+        "troubleshooting.\n"
+    )
 
-## Pipeline Context
+    Path("ai-log-summary.md").write_text(output)
 
-```text
-{context}
+    print("AI log summary generated successfully.")
+
+
+if __name__ == "__main__":
+    main()
