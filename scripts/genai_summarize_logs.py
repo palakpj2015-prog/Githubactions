@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+from openai import OpenAI
 
 
 def read_file(path):
@@ -10,56 +13,64 @@ def read_file(path):
     return f"{path} was not found."
 
 
-def analyze_log(name, content):
-    lower = content.lower()
-
-    if "error" in lower or "failed" in lower or "failure" in lower:
-        status = "Issues detected"
-    else:
-        status = "No obvious errors detected"
-
-    return (
-        f"### {name}\n\n"
-        f"**Analysis:** {status}\n\n"
-        f"Log size: {len(content)} characters.\n"
-    )
-
-
 def main():
-    log_files = [
-        "workflow-logs.txt",
-        "terraform-plan.log",
-    ]
+    api_key = os.environ.get("OPENAI_API_KEY")
 
-    summary_parts = []
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured.")
 
-    for log_file in log_files:
-        content = read_file(log_file)
-        summary_parts.append(
-            analyze_log(log_file, content)
-        )
+    client = OpenAI(api_key=api_key)
 
     context = read_file("poc-context.txt")
+    test_logs = read_file("workflow-logs.txt")
+    terraform_logs = read_file("terraform-plan.log")
 
-    output = (
-        "# AI Pipeline Log Summary\n\n"
-        "## Pipeline Context\n\n"
-        "```text\n"
-        f"{context}\n"
-        "```\n\n"
-        "## Automated Log Analysis\n\n"
-        f"{chr(10).join(summary_parts)}\n"
-        "## Overall Analysis\n\n"
-        "The GitHub Actions pipeline logs were collected and "
-        "analyzed automatically.\n\n"
-        "The analysis stage demonstrates how pipeline execution "
-        "data can be transformed into a human-readable summary "
-        "as part of the CI/CD workflow.\n\n"
-        "## Next Steps\n\n"
-        "Review any stages marked as having issues and inspect "
-        "the corresponding GitHub Actions logs for detailed "
-        "troubleshooting.\n"
+    prompt = f"""
+You are a DevOps AI assistant integrated into GitHub Actions.
+
+Analyze the CI/CD pipeline logs below and produce a concise,
+human-readable troubleshooting and execution summary.
+
+PIPELINE CONTEXT:
+{context}
+
+TEST LOG:
+{test_logs}
+
+TERRAFORM LOG:
+{terraform_logs}
+
+Generate Markdown with exactly these sections:
+
+# AI Pipeline Log Summary
+
+## Pipeline Status
+Explain whether the pipeline stages appear successful or failed.
+
+## Test Analysis
+Summarize the application test results.
+
+## Terraform Analysis
+Summarize the Terraform validation/plan results.
+
+## Issues Detected
+List important errors, warnings, or potential problems.
+If there are none, explicitly say so.
+
+## Recommendations
+Provide practical next steps only when appropriate.
+
+Do not invent information.
+Base the analysis only on the supplied pipeline context and logs.
+Keep the response concise.
+"""
+
+    response = client.responses.create(
+        model="gpt-5.6-luna",
+        input=prompt,
     )
+
+    output = response.output_text
 
     Path("ai-log-summary.md").write_text(output)
 

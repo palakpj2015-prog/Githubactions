@@ -1,84 +1,78 @@
+import os
 from pathlib import Path
+
+from openai import OpenAI
+
+
+def read_file(path):
+    file_path = Path(path)
+
+    if file_path.exists():
+        return file_path.read_text(errors="ignore")
+
+    return f"{path} was not found."
 
 
 def main():
-    context_file = Path("poc-context.txt")
+    api_key = os.environ.get("OPENAI_API_KEY")
 
-    if context_file.exists():
-        context = context_file.read_text()
-    else:
-        context = "Pipeline context was not available."
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured.")
 
-    lines = context.splitlines()
+    client = OpenAI(api_key=api_key)
 
-    values = {}
+    context = read_file("poc-context.txt")
+    test_logs = read_file("workflow-logs.txt")
+    terraform_logs = read_file("terraform-plan.log")
 
-    for line in lines:
-        if ":" in line:
-            key, value = line.split(":", 1)
-            values[key.strip()] = value.strip()
+    prompt = f"""
+You are a DevOps AI assistant integrated into a GitHub Actions CI/CD pipeline.
 
-    repository = values.get("Repository", "Unknown")
-    commit = values.get("Commit", "Unknown")
-    branch = values.get("Branch", "Unknown")
-    test_result = values.get("Test result", "unknown")
-    terraform_result = values.get("Terraform result", "unknown")
-    docker_result = values.get("Docker result", "unknown")
+Analyze the following pipeline information and generate concise release notes.
 
-    status = "SUCCESS"
+PIPELINE CONTEXT:
+{context}
 
-    if "failure" in {
-        test_result.lower(),
-        terraform_result.lower(),
-        docker_result.lower(),
-    }:
-        status = "FAILED"
+TEST LOG:
+{test_logs}
 
-    notes = f"""# AI Release Notes
+TERRAFORM LOG:
+{terraform_logs}
+
+Generate Markdown release notes containing:
+
+# AI Release Notes
 
 ## Pipeline Status
+State whether the pipeline appears successful or failed.
 
-**{status}**
+## Changes / Deployment
+Summarize what was deployed or prepared for deployment.
 
-## Repository
+## Validation
+Summarize the test and Terraform results.
 
-`{repository}`
+## Docker / ECR
+Mention the Docker image and ECR repository information if available.
 
-## Branch
+## AI Summary
+Give a short overall assessment.
 
-`{branch}`
-
-## Commit
-
-`{commit}`
-
-## Pipeline Results
-
-| Stage | Result |
-|---|---|
-| Application Tests | {test_result} |
-| Terraform Plan | {terraform_result} |
-| Docker / ECR | {docker_result} |
-
-## Summary
-
-This release was automatically analyzed from the GitHub Actions
-pipeline context and execution results.
-
-The pipeline completed with an overall status of **{status}**.
-
-## Deployment Artifact
-
-The Docker image is tagged using the Git commit SHA, providing
-traceability between the source code and the ECR image.
-
+Do not invent information that is not present in the supplied context or logs.
+Keep the response concise and suitable for a software release.
 """
 
-    Path("ai-release-notes.md").write_text(notes)
+    response = client.responses.create(
+        model="gpt-5.6-luna",
+        input=prompt,
+    )
+
+    output = response.output_text
+
+    Path("ai-release-notes.md").write_text(output)
 
     print("AI release notes generated successfully.")
 
 
 if __name__ == "__main__":
     main()
-    

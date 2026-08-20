@@ -1,143 +1,5 @@
-name: CD - Docker ECR Terraform GenAI
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  id-token: write
-
-env:
-  AWS_REGION: ap-south-1
-  ECR_REPOSITORY: githubactions-genai-poc
-  IMAGE_TAG: ${{ github.sha }}
-
-jobs:
-
-  # ---------------------------------------------------------
-  # 1. RUN APPLICATION TESTS
-  # ---------------------------------------------------------
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r app/requirements.txt
-
-      - name: Run unit tests
-        run: |
-          pytest app/ -v 2>&1 | tee workflow-logs.txt
-
-      - name: Upload test logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-logs
-          path: workflow-logs.txt
-
-
-  # ---------------------------------------------------------
-  # 2. TERRAFORM PLAN
-  # ---------------------------------------------------------
-  terraform-plan:
-    name: Terraform Plan
-    needs: test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
-
-      - name: Terraform init
-        run: |
-          terraform -chdir=terraform init
-
-      - name: Terraform validate
-        run: |
-          terraform -chdir=terraform validate
-
-      - name: Terraform plan
-        run: |
-          terraform -chdir=terraform plan -no-color 2>&1 | tee terraform-plan.log
-
-      - name: Upload Terraform logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan-logs
-          path: terraform-plan.log
-
-
-  # ---------------------------------------------------------
-  # 3. BUILD AND PUSH DOCKER IMAGE TO AWS ECR
-  # ---------------------------------------------------------
-  docker-push:
-    name: Build and Push Docker Image
-    needs: test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
-
-      - name: Verify ECR repository
-        run: |
-          aws ecr describe-repositories \
-            --repository-names "${ECR_REPOSITORY}" \
-            --region "${AWS_REGION}"
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-
-
   # ---------------------------------------------------------
   # 4. GENAI PIPELINE ANALYSIS
-  # ---------------------------------------------------------
-  # Cost-free local GenAI-style analysis.
-  # No OpenAI API key or external API is required.
   # ---------------------------------------------------------
   genai-summary:
     name: Generate GenAI Summary
@@ -168,6 +30,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install OpenAI dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai
+
       - name: Build AI context
         env:
           TEST_RESULT: ${{ needs.test.result }}
@@ -189,10 +56,14 @@ jobs:
           } > poc-context.txt
 
       - name: Generate AI release notes
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/genai_release_notes.py
 
       - name: Generate AI log summary
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/genai_summarize_logs.py
 
@@ -204,32 +75,3 @@ jobs:
             ai-release-notes.md
             ai-log-summary.md
             poc-context.txt
-
-
-  # ---------------------------------------------------------
-  # 5. FAILURE NOTIFICATION
-  # ---------------------------------------------------------
-  notify-failure:
-    name: Failure Notification
-
-    needs:
-      - test
-      - terraform-plan
-      - docker-push
-      - genai-summary
-
-    if: failure()
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Slack notification
-        if: ${{ vars.SLACK_ENABLED == 'true' }}
-        uses: slackapi/slack-github-action@v2
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: |
-            {
-              "text": "POC pipeline failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            }
