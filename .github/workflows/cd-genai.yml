@@ -49,7 +49,7 @@ jobs:
 
 
   # ---------------------------------------------------------
-  # 2. TERRAFORM VALIDATION / PLAN
+  # 2. TERRAFORM PLAN
   # ---------------------------------------------------------
   terraform-plan:
     name: Terraform Plan
@@ -83,13 +83,13 @@ jobs:
 
       - name: Terraform plan
         run: |
-          terraform -chdir=terraform plan -no-color 2>&1 | tee workflow-logs.txt
+          terraform -chdir=terraform plan -no-color 2>&1 | tee terraform-plan.log
 
       - name: Upload Terraform logs
         uses: actions/upload-artifact@v4
         with:
           name: terraform-plan-logs
-          path: workflow-logs.txt
+          path: terraform-plan.log
 
 
   # ---------------------------------------------------------
@@ -136,6 +136,9 @@ jobs:
   # ---------------------------------------------------------
   # 4. GENAI PIPELINE ANALYSIS
   # ---------------------------------------------------------
+  # Cost-free local GenAI-style analysis.
+  # No OpenAI API key or external API is required.
+  # ---------------------------------------------------------
   genai-summary:
     name: Generate GenAI Summary
 
@@ -165,14 +168,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install GenAI dependencies
-        run: |
-          python -m pip install --upgrade pip
-
-          if [ -f scripts/requirements.txt ]; then
-            pip install -r scripts/requirements.txt
-          fi
-
       - name: Build AI context
         env:
           TEST_RESULT: ${{ needs.test.result }}
@@ -194,14 +189,10 @@ jobs:
           } > poc-context.txt
 
       - name: Generate AI release notes
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/genai_release_notes.py
 
       - name: Generate AI log summary
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/genai_summarize_logs.py
 

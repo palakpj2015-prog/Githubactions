@@ -1,56 +1,84 @@
-#!/usr/bin/env python3
-"""Generate AI release notes from CI/CD context."""
-import json
-import os
 from pathlib import Path
-from urllib import request
 
 
-def call_openai(prompt: str) -> str:
-    body = json.dumps(
-        {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Write concise CI/CD release notes in markdown. "
-                        "Do not invent test results or deployment outcomes."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.2,
-        }
-    ).encode()
+def main():
+    context_file = Path("poc-context.txt")
 
-    req = request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]["content"]
+    if context_file.exists():
+        context = context_file.read_text()
+    else:
+        context = "Pipeline context was not available."
 
+    lines = context.splitlines()
 
-def main() -> None:
-    context_path = Path("poc-context.txt")
-    context = context_path.read_text(encoding="utf-8") if context_path.exists() else "No context provided"
+    values = {}
 
-    notes = call_openai(
-        "Create release notes with sections: Summary, Changes, CI Status, "
-        "Deployment Notes, and Review Items.\n\n"
-        + context
-    )
+    for line in lines:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            values[key.strip()] = value.strip()
 
-    Path("ai-release-notes.md").write_text(notes, encoding="utf-8")
-    print("Wrote ai-release-notes.md")
+    repository = values.get("Repository", "Unknown")
+    commit = values.get("Commit", "Unknown")
+    branch = values.get("Branch", "Unknown")
+    test_result = values.get("Test result", "unknown")
+    terraform_result = values.get("Terraform result", "unknown")
+    docker_result = values.get("Docker result", "unknown")
+
+    status = "SUCCESS"
+
+    if "failure" in {
+        test_result.lower(),
+        terraform_result.lower(),
+        docker_result.lower(),
+    }:
+        status = "FAILED"
+
+    notes = f"""# AI Release Notes
+
+## Pipeline Status
+
+**{status}**
+
+## Repository
+
+`{repository}`
+
+## Branch
+
+`{branch}`
+
+## Commit
+
+`{commit}`
+
+## Pipeline Results
+
+| Stage | Result |
+|---|---|
+| Application Tests | {test_result} |
+| Terraform Plan | {terraform_result} |
+| Docker / ECR | {docker_result} |
+
+## Summary
+
+This release was automatically analyzed from the GitHub Actions
+pipeline context and execution results.
+
+The pipeline completed with an overall status of **{status}**.
+
+## Deployment Artifact
+
+The Docker image is tagged using the Git commit SHA, providing
+traceability between the source code and the ECR image.
+
+"""
+
+    Path("ai-release-notes.md").write_text(notes)
+
+    print("AI release notes generated successfully.")
 
 
 if __name__ == "__main__":
     main()
+    
