@@ -1,0 +1,148 @@
+name: CD - Docker ECR Terraform GenAI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: genai-poc-app
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt
+
+      - name: Run unit tests
+        run: pytest app/ -v | tee workflow-logs.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: workflow-logs.txt
+
+  terraform-plan:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform init
+        run: terraform -chdir=terraform init
+
+      - name: Terraform plan
+        run: terraform -chdir=terraform plan -no-color | tee workflow-logs.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-logs
+          path: workflow-logs.txt
+
+  docker-push:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+  genai-summary:
+    needs: [test, terraform-plan, docker-push]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-logs"
+          merge-multiple: true
+
+      - uses: actions/setup-python@v5
+
+      - name: Build AI context
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          TERRAFORM_RESULT: ${{ needs.terraform-plan.result }}
+          DOCKER_RESULT: ${{ needs.docker-push.result }}
+        run: |
+          {
+            echo "Repository: ${{ github.repository }}"
+            echo "Commit: ${{ github.sha }}"
+            echo "Actor: ${{ github.actor }}"
+            echo "Message: ${{ github.event.head_commit.message }}"
+            echo "Image tag: ${{ env.IMAGE_TAG }}"
+            echo "Job results: test=${TEST_RESULT}, terraform=${TERRAFORM_RESULT}, docker=${DOCKER_RESULT}"
+          } > poc-context.txt
+
+      - name: Generate AI release notes
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python scripts/genai_release_notes.py
+
+      - name: Generate AI log summary
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python scripts/genai_summarize_logs.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-outputs
+          path: |
+            ai-release-notes.md
+            ai-log-summary.md
+
+  notify-failure:
+    needs: [test, terraform-plan, docker-push, genai-summary]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slack notify
+        if: ${{ vars.SLACK_ENABLED == 'true' }}
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {"text":"POC pipeline failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}

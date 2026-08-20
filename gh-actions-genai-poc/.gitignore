@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+__pycache__/
+*.pyc
+.env
+ai-*.md
+workflow-logs.txt
+poc-context.txt
