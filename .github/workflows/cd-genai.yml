@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+
   workflow_dispatch:
 
 permissions:
@@ -14,17 +15,20 @@ env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: githubactions-genai-poc
   IMAGE_TAG: ${{ github.sha }}
+  OLLAMA_MODEL: qwen2.5:0.5b
 
 jobs:
 
-  # ---------------------------------------------------------
-  # 1. RUN APPLICATION TESTS
-  # ---------------------------------------------------------
+  # =========================================================
+  # 1. APPLICATION TESTS
+  # =========================================================
+
   test:
     name: Run Tests
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -38,7 +42,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r app/requirements.txt
 
-      - name: Run unit tests
+      - name: Run tests
         run: |
           pytest app/ -v 2>&1 | tee workflow-logs.txt
 
@@ -49,15 +53,17 @@ jobs:
           path: workflow-logs.txt
 
 
-  # ---------------------------------------------------------
+  # =========================================================
   # 2. TERRAFORM PLAN
-  # ---------------------------------------------------------
+  # =========================================================
+
   terraform-plan:
     name: Terraform Plan
     needs: test
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -93,15 +99,17 @@ jobs:
           path: terraform-plan.log
 
 
-  # ---------------------------------------------------------
-  # 3. BUILD AND PUSH DOCKER IMAGE TO AWS ECR
-  # ---------------------------------------------------------
+  # =========================================================
+  # 3. DOCKER BUILD AND ECR PUSH
+  # =========================================================
+
   docker-push:
     name: Build and Push Docker Image
     needs: test
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -134,9 +142,10 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
 
 
-  # ---------------------------------------------------------
-  # 4. GENAI PIPELINE ANALYSIS
-  # ---------------------------------------------------------
+  # =========================================================
+  # 4. GENAI ANALYSIS
+  # =========================================================
+
   genai-summary:
     name: Generate GenAI Summary
 
@@ -150,10 +159,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # -------------------------------------------------------
+      # Download logs from previous jobs
+      # -------------------------------------------------------
 
       - name: Download pipeline logs
         uses: actions/download-artifact@v4
@@ -161,15 +175,61 @@ jobs:
           pattern: "*-logs"
           merge-multiple: true
 
+      # -------------------------------------------------------
+      # Setup Python
+      # -------------------------------------------------------
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install OpenAI SDK
+      # -------------------------------------------------------
+      # Install Ollama
+      # -------------------------------------------------------
+
+      - name: Install Ollama
         run: |
-          python -m pip install --upgrade pip
-          pip install openai
+          curl -fsSL https://ollama.com/install.sh | sh
+
+      # -------------------------------------------------------
+      # Start Ollama
+      # -------------------------------------------------------
+
+      - name: Start Ollama
+        run: |
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+
+          echo "Waiting for Ollama..."
+
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:11434/api/tags > /dev/null; then
+              echo "Ollama is ready."
+              break
+            fi
+
+            sleep 2
+          done
+
+      # -------------------------------------------------------
+      # Download small local AI model
+      # -------------------------------------------------------
+
+      - name: Download local AI model
+        run: |
+          ollama pull "${OLLAMA_MODEL}"
+
+      # -------------------------------------------------------
+      # Verify model
+      # -------------------------------------------------------
+
+      - name: Verify local AI model
+        run: |
+          ollama list
+
+      # -------------------------------------------------------
+      # Build pipeline context
+      # -------------------------------------------------------
 
       - name: Build AI context
         env:
@@ -191,17 +251,25 @@ jobs:
             echo "Docker result: ${DOCKER_RESULT}"
           } > poc-context.txt
 
+      # -------------------------------------------------------
+      # Generate AI release notes
+      # -------------------------------------------------------
+
       - name: Generate AI release notes
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/genai_release_notes.py
 
+      # -------------------------------------------------------
+      # Generate AI log summary
+      # -------------------------------------------------------
+
       - name: Generate AI log summary
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python scripts/genai_summarize_logs.py
+
+      # -------------------------------------------------------
+      # Upload AI-generated outputs
+      # -------------------------------------------------------
 
       - name: Upload AI outputs
         uses: actions/upload-artifact@v4
@@ -212,31 +280,19 @@ jobs:
             ai-log-summary.md
             poc-context.txt
 
+      # -------------------------------------------------------
+      # Show AI output in workflow logs
+      # -------------------------------------------------------
 
-  # ---------------------------------------------------------
-  # 5. FAILURE NOTIFICATION
-  # ---------------------------------------------------------
-  notify-failure:
-    name: Failure Notification
+      - name: Display AI outputs
+        run: |
+          echo "========================================="
+          echo "AI RELEASE NOTES"
+          echo "========================================="
+          cat ai-release-notes.md
 
-    needs:
-      - test
-      - terraform-plan
-      - docker-push
-      - genai-summary
-
-    if: failure()
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Slack notification
-        if: ${{ vars.SLACK_ENABLED == 'true' }}
-        uses: slackapi/slack-github-action@v2
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: |
-            {
-              "text": "POC pipeline failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            }
+          echo ""
+          echo "========================================="
+          echo "AI PIPELINE LOG SUMMARY"
+          echo "========================================="
+          cat ai-log-summary.md

@@ -1,10 +1,11 @@
+import json
 import os
+import urllib.request
 from pathlib import Path
 
-from openai import OpenAI
 
-
-MODEL = "gpt-5.6-luna"
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
 
 
 def read_file(path, max_chars=12000):
@@ -21,14 +22,32 @@ def read_file(path, max_chars=12000):
     return content
 
 
+def call_local_ai(prompt):
+    payload = {
+        "model": MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.2
+        }
+    }
+
+    data = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        OLLAMA_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(request, timeout=180) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    return result.get("response", "").strip()
+
+
 def main():
-    api_key = os.environ.get("OPENAI_API_KEY")
-
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured.")
-
-    client = OpenAI(api_key=api_key)
-
     context = read_file("poc-context.txt")
     test_logs = read_file("workflow-logs.txt")
     terraform_logs = read_file("terraform-plan.log")
@@ -36,7 +55,7 @@ def main():
     prompt = f"""
 You are a DevOps AI assistant integrated into GitHub Actions.
 
-Analyze the CI/CD pipeline logs below and produce a concise,
+Analyze the CI/CD pipeline information below and produce a concise,
 human-readable pipeline analysis.
 
 PIPELINE CONTEXT:
@@ -75,12 +94,10 @@ Rules:
 - Highlight actionable problems.
 """
 
-    response = client.responses.create(
-        model=MODEL,
-        input=prompt,
-    )
+    output = call_local_ai(prompt)
 
-    output = response.output_text.strip()
+    if not output:
+        raise RuntimeError("Local AI returned an empty response.")
 
     Path("ai-log-summary.md").write_text(output)
 
