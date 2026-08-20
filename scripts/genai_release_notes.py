@@ -4,13 +4,21 @@ from pathlib import Path
 from openai import OpenAI
 
 
-def read_file(path):
+MODEL = "gpt-5.6-luna"
+
+
+def read_file(path, max_chars=12000):
     file_path = Path(path)
 
-    if file_path.exists():
-        return file_path.read_text(errors="ignore")
+    if not file_path.exists():
+        return f"{path} was not found."
 
-    return f"{path} was not found."
+    content = file_path.read_text(errors="ignore")
+
+    if len(content) > max_chars:
+        content = content[:max_chars] + "\n[Log truncated]"
+
+    return content
 
 
 def main():
@@ -28,7 +36,8 @@ def main():
     prompt = f"""
 You are a DevOps AI assistant integrated into a GitHub Actions CI/CD pipeline.
 
-Analyze the following pipeline information and generate concise release notes.
+Analyze the pipeline information below and generate concise Markdown
+release notes.
 
 PIPELINE CONTEXT:
 {context}
@@ -39,35 +48,38 @@ TEST LOG:
 TERRAFORM LOG:
 {terraform_logs}
 
-Generate Markdown release notes containing:
+Generate the following sections:
 
 # AI Release Notes
 
 ## Pipeline Status
-State whether the pipeline appears successful or failed.
+State whether the pipeline appears successful, failed, or partially successful.
 
 ## Changes / Deployment
-Summarize what was deployed or prepared for deployment.
+Summarize what the pipeline built, validated, or deployed.
 
 ## Validation
-Summarize the test and Terraform results.
+Summarize the application test and Terraform results.
 
 ## Docker / ECR
-Mention the Docker image and ECR repository information if available.
+Summarize the Docker image and ECR information available in the context.
 
 ## AI Summary
-Give a short overall assessment.
+Provide a concise overall assessment.
 
-Do not invent information that is not present in the supplied context or logs.
-Keep the response concise and suitable for a software release.
+Rules:
+- Use only information provided above.
+- Do not invent deployment details.
+- Keep the release notes concise.
+- Use professional DevOps terminology.
 """
 
     response = client.responses.create(
-        model="gpt-5.6-luna",
+        model=MODEL,
         input=prompt,
     )
 
-    output = response.output_text
+    output = response.output_text.strip()
 
     Path("ai-release-notes.md").write_text(output)
 

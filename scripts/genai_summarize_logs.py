@@ -4,13 +4,21 @@ from pathlib import Path
 from openai import OpenAI
 
 
-def read_file(path):
+MODEL = "gpt-5.6-luna"
+
+
+def read_file(path, max_chars=12000):
     file_path = Path(path)
 
-    if file_path.exists():
-        return file_path.read_text(errors="ignore")
+    if not file_path.exists():
+        return f"{path} was not found."
 
-    return f"{path} was not found."
+    content = file_path.read_text(errors="ignore")
+
+    if len(content) > max_chars:
+        content = content[:max_chars] + "\n[Log truncated]"
+
+    return content
 
 
 def main():
@@ -29,7 +37,7 @@ def main():
 You are a DevOps AI assistant integrated into GitHub Actions.
 
 Analyze the CI/CD pipeline logs below and produce a concise,
-human-readable troubleshooting and execution summary.
+human-readable pipeline analysis.
 
 PIPELINE CONTEXT:
 {context}
@@ -51,26 +59,28 @@ Explain whether the pipeline stages appear successful or failed.
 Summarize the application test results.
 
 ## Terraform Analysis
-Summarize the Terraform validation/plan results.
+Summarize the Terraform validation and plan results.
 
 ## Issues Detected
 List important errors, warnings, or potential problems.
-If there are none, explicitly say so.
+If there are none, explicitly state that no significant issues were detected.
 
 ## Recommendations
-Provide practical next steps only when appropriate.
+Provide practical recommendations only when appropriate.
 
-Do not invent information.
-Base the analysis only on the supplied pipeline context and logs.
-Keep the response concise.
+Rules:
+- Base the analysis only on the supplied context and logs.
+- Do not invent information.
+- Keep the summary concise.
+- Highlight actionable problems.
 """
 
     response = client.responses.create(
-        model="gpt-5.6-luna",
+        model=MODEL,
         input=prompt,
     )
 
-    output = response.output_text
+    output = response.output_text.strip()
 
     Path("ai-log-summary.md").write_text(output)
 
