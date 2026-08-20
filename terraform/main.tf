@@ -41,6 +41,7 @@ resource "aws_ecr_repository" "app" {
 
 # Customer-managed KMS encryption and access logging are
 # intentionally omitted for this Free Tier POC.
+# tfsec:ignore:aws-s3-enable-bucket-logging
 resource "aws_s3_bucket" "artifacts" {
   bucket = "${var.project_name}-artifacts-${data.aws_caller_identity.current.account_id}"
 
