@@ -9,7 +9,7 @@ OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
 
 
-def read_file(path, max_chars=16000):
+def read_file(path, max_chars=8000):
     file_path = Path(path)
 
     if not file_path.exists():
@@ -29,7 +29,8 @@ def call_local_ai(prompt):
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.1
+            "temperature": 0.1,
+            "num_predict": 500
         }
     }
 
@@ -43,11 +44,17 @@ def call_local_ai(prompt):
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
+        with urllib.request.urlopen(request, timeout=300) as response:
             result = json.loads(response.read().decode("utf-8"))
+
     except urllib.error.URLError as exc:
         raise RuntimeError(
             f"Unable to connect to local Ollama service: {exc}"
+        ) from exc
+
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "Ollama took longer than 5 minutes to generate the AI diagnosis."
         ) from exc
 
     output = result.get("response", "").strip()
@@ -59,38 +66,42 @@ def call_local_ai(prompt):
 
 
 def main():
-    context = read_file("poc-context.txt")
-    test_logs = read_file("workflow-logs.txt")
-    terraform_logs = read_file("terraform-plan.log")
+    context = read_file("poc-context.txt", 6000)
+    test_logs = read_file("workflow-logs.txt", 7000)
+    terraform_logs = read_file("terraform-plan.log", 7000)
 
     prompt = f"""
 You are an AI-powered DevOps failure diagnosis assistant
 running inside a GitHub Actions CI/CD pipeline.
 
-Your job is NOT simply to repeat the GitHub Actions errors.
+Your purpose is to provide useful analysis beyond simply
+repeating the GitHub Actions error message.
 
-You must analyze the available pipeline evidence and identify:
+Analyze the supplied pipeline context and logs.
+
+Identify:
 
 1. What failed
-2. The most likely root cause
-3. Evidence supporting the diagnosis
-4. Impact of the problem
-5. The recommended remediation
-6. The exact file or configuration that should be changed
-7. Verification steps after the fix
+2. Most likely root cause
+3. Evidence
+4. Impact
+5. Recommended fix
+6. Exact file/configuration to change when possible
+7. Verification steps
+8. Preventive recommendation
+9. AI confidence
 
 IMPORTANT RULES:
 
-- Use ONLY the supplied pipeline context and logs.
-- Do not invent AWS resources, errors, files, or configuration.
-- If evidence is insufficient, explicitly say so.
+- Use ONLY the supplied context and logs.
+- Do not invent errors or infrastructure.
+- Do not invent files.
 - Clearly distinguish confirmed facts from likely causes.
-- Do not claim that a deployment occurred unless the logs prove it.
-- Do not suggest automatically modifying production resources.
-- Recommendations must be safe and practical.
-- Prefer specific fixes over generic advice.
-- Keep the response concise enough for a CI/CD artifact.
-- This is a proof-of-concept, so prioritize useful actionable analysis.
+- If the root cause cannot be determined, say so.
+- Do not claim deployment unless the logs prove deployment.
+- Do not automatically modify production code or infrastructure.
+- Keep recommendations practical.
+- Keep the response concise.
 
 PIPELINE CONTEXT
 ================
@@ -105,83 +116,77 @@ TERRAFORM LOG
 {terraform_logs}
 
 
-Generate Markdown using EXACTLY these sections:
+Return Markdown using EXACTLY these sections:
 
 # AI Failure Diagnosis & Remediation
 
 ## Overall Assessment
 
-Give a short assessment of the pipeline.
-
-State whether it appears:
+State whether the pipeline is:
 
 - Successful
 - Failed
 - Partially successful
 - Blocked/skipped
 
+Give a short explanation.
+
 ## Failure Detection
 
-Identify the failed, blocked, or skipped stages.
+Identify failed, blocked, or skipped stages.
 
-If everything succeeded, explicitly say that no pipeline failure was detected.
+If everything succeeded, state that no pipeline failure was detected.
 
 ## Root Cause
 
 Identify the most likely root cause.
 
-If the evidence does not prove a root cause, say:
+If it cannot be determined from the evidence, explicitly say:
 
 "Root cause could not be conclusively determined from the available logs."
 
-Do not invent one.
-
 ## Evidence
 
-List the specific evidence from the supplied context or logs
-that supports your diagnosis.
+List the important evidence supporting the diagnosis.
 
 ## Impact
 
-Explain what the problem could prevent or affect.
-
-Keep this practical and concise.
+Explain what the issue affects or prevents.
 
 ## Recommended Fix
 
-Give the recommended remediation.
+Give a practical remediation.
 
-Where possible, identify:
+When possible include:
 
-- File name
+- File
 - Configuration/resource
-- What should change
+- Required change
 
-Show a small code/configuration example when the logs provide
-enough information to do so.
+Provide a short code example when sufficient evidence exists.
 
 ## Verification Steps
 
-Provide concrete commands or checks that should be performed
-after applying the fix.
+Give concrete commands or checks to verify the fix.
 
 ## Preventive Recommendation
 
-Give one or two practical recommendations that could reduce
-the likelihood of the same problem happening again.
+Give one or two useful preventive recommendations.
 
 ## AI Confidence
 
-Classify confidence as:
+State:
 
-- High
-- Medium
-- Low
+High
 
-Briefly explain why.
+Medium
 
+or
+
+Low
+
+Then briefly explain why.
 """
-
 
     output = call_local_ai(prompt)
 

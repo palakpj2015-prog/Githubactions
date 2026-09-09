@@ -9,7 +9,7 @@ OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
 
 
-def read_file(path, max_chars=12000):
+def read_file(path, max_chars=6000):
     file_path = Path(path)
 
     if not file_path.exists():
@@ -29,7 +29,8 @@ def call_local_ai(prompt):
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.2
+            "temperature": 0.1,
+            "num_predict": 350
         }
     }
 
@@ -43,11 +44,17 @@ def call_local_ai(prompt):
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
+        with urllib.request.urlopen(request, timeout=300) as response:
             result = json.loads(response.read().decode("utf-8"))
+
     except urllib.error.URLError as exc:
         raise RuntimeError(
             f"Unable to connect to local Ollama service: {exc}"
+        ) from exc
+
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "Ollama took longer than 5 minutes to generate the release notes."
         ) from exc
 
     output = result.get("response", "").strip()
@@ -59,85 +66,45 @@ def call_local_ai(prompt):
 
 
 def main():
-    context = read_file("poc-context.txt")
-    test_logs = read_file("workflow-logs.txt")
-    terraform_logs = read_file("terraform-plan.log")
+    context = read_file("poc-context.txt", 5000)
+    test_logs = read_file("workflow-logs.txt", 5000)
+    terraform_logs = read_file("terraform-plan.log", 5000)
 
     prompt = f"""
-You are a DevOps AI assistant integrated into a GitHub Actions
-CI/CD pipeline.
+You are a DevOps AI assistant.
 
-Create concise release notes based ONLY on the supplied pipeline
-context and logs.
+Create SHORT release notes from the pipeline information below.
 
-PIPELINE CONTEXT
-================
+Do not invent information.
+Do not claim deployment unless the logs prove deployment occurred.
+
+PIPELINE:
 {context}
 
-TEST LOG
-========
+TEST LOG:
 {test_logs}
 
-TERRAFORM LOG
-=============
+TERRAFORM:
 {terraform_logs}
 
-Generate Markdown using EXACTLY these sections:
+Return Markdown with these sections:
 
 # AI Release Notes
 
 ## Pipeline Status
+State whether the pipeline is successful, failed, partially successful, or blocked.
 
-State whether the pipeline appears:
+## Validation
+Briefly summarize tests, Terraform validation/plan, Docker and ECR activity.
 
-- Successful
-- Failed
-- Partially successful
-- Blocked/skipped
-
-## Changes & Validation
-
-Summarize what was tested, validated, built, or planned.
-
-Do not claim that infrastructure was actually deployed unless
-the logs prove that an apply/deployment occurred.
-
-## Docker & ECR
-
-Summarize the Docker/ECR activity shown by the available context.
-
-Mention the repository and image tag when available.
-
-## Infrastructure
-
-Summarize the Terraform activity.
-
-Clearly distinguish between:
-
-- validation
-- plan
-- apply
-
-Do not describe a plan as an actual deployment.
-
-## Security & Quality
-
-Mention relevant test, Semgrep, tfsec, or infrastructure
-security information only when available in the supplied data.
+## Security
+Mention relevant security or quality checks if present.
 
 ## AI Summary
+Give a concise overall assessment.
 
-Give a short professional assessment of the pipeline.
-
-Rules:
-
-- Use only supplied information.
-- Do not invent changes.
-- Do not invent deployment results.
-- Keep the output concise.
-- Use professional DevOps terminology.
+Keep the response under approximately 300 words.
 """
-
 
     output = call_local_ai(prompt)
 
