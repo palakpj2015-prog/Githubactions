@@ -44,9 +44,11 @@ jobs:
 
       - name: Run tests
         run: |
+          set -o pipefail
           pytest app/ -v 2>&1 | tee workflow-logs.txt
 
       - name: Upload test logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-logs
@@ -90,9 +92,11 @@ jobs:
 
       - name: Terraform plan
         run: |
+          set -o pipefail
           terraform -chdir=terraform plan -no-color 2>&1 | tee terraform-plan.log
 
       - name: Upload Terraform logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: terraform-plan-logs
@@ -146,24 +150,32 @@ jobs:
   # 4. GENAI ANALYSIS
   # =========================================================
 
-  genai-summary:
-    name: Generate GenAI Summary
+  genai-analysis:
+    name: AI Failure Diagnosis and Release Analysis
 
     needs:
       - test
       - terraform-plan
       - docker-push
 
+    # IMPORTANT:
+    # AI runs even when one of the earlier jobs fails.
+    # This allows GenAI to analyze the failure.
     if: always()
 
     runs-on: ubuntu-latest
 
     steps:
 
+      # -------------------------------------------------------
+      # Checkout repository
+      # -------------------------------------------------------
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
 
       # -------------------------------------------------------
       # Download logs from previous jobs
@@ -174,6 +186,8 @@ jobs:
         with:
           pattern: "*-logs"
           merge-multiple: true
+          if-no-files-found: warn
+
 
       # -------------------------------------------------------
       # Setup Python
@@ -184,6 +198,7 @@ jobs:
         with:
           python-version: "3.11"
 
+
       # -------------------------------------------------------
       # Install Ollama
       # -------------------------------------------------------
@@ -191,6 +206,7 @@ jobs:
       - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
+
 
       # -------------------------------------------------------
       # Start Ollama
@@ -203,13 +219,18 @@ jobs:
           echo "Waiting for Ollama..."
 
           for i in {1..30}; do
-            if curl -s http://127.0.0.1:11434/api/tags > /dev/null; then
+            if curl -sf http://127.0.0.1:11434/api/tags > /dev/null; then
               echo "Ollama is ready."
-              break
+              exit 0
             fi
 
             sleep 2
           done
+
+          echo "Ollama failed to start."
+          cat /tmp/ollama.log || true
+          exit 1
+
 
       # -------------------------------------------------------
       # Download small local AI model
@@ -219,6 +240,7 @@ jobs:
         run: |
           ollama pull "${OLLAMA_MODEL}"
 
+
       # -------------------------------------------------------
       # Verify model
       # -------------------------------------------------------
@@ -227,8 +249,9 @@ jobs:
         run: |
           ollama list
 
+
       # -------------------------------------------------------
-      # Build pipeline context
+      # Build pipeline context for AI
       # -------------------------------------------------------
 
       - name: Build AI context
@@ -239,17 +262,37 @@ jobs:
         run: |
           {
             echo "Repository: ${{ github.repository }}"
+            echo "Repository URL: https://github.com/${{ github.repository }}"
+            echo "Workflow: ${{ github.workflow }}"
+            echo "Run ID: ${{ github.run_id }}"
+            echo "Run Number: ${{ github.run_number }}"
             echo "Commit: ${{ github.sha }}"
             echo "Branch: ${{ github.ref_name }}"
+            echo "Event: ${{ github.event_name }}"
             echo "Actor: ${{ github.actor }}"
             echo "Commit message: ${{ github.event.head_commit.message }}"
-            echo "AWS Region: ${{ env.AWS_REGION }}"
-            echo "ECR Repository: ${{ env.ECR_REPOSITORY }}"
-            echo "Image tag: ${{ env.IMAGE_TAG }}"
+            echo ""
+            echo "AWS Region: ${AWS_REGION}"
+            echo "ECR Repository: ${ECR_REPOSITORY}"
+            echo "Image tag: ${IMAGE_TAG}"
+            echo ""
             echo "Test result: ${TEST_RESULT}"
             echo "Terraform result: ${TERRAFORM_RESULT}"
             echo "Docker result: ${DOCKER_RESULT}"
           } > poc-context.txt
+
+          echo "===== AI CONTEXT ====="
+          cat poc-context.txt
+
+
+      # -------------------------------------------------------
+      # Generate AI failure diagnosis
+      # -------------------------------------------------------
+
+      - name: Generate AI failure diagnosis
+        run: |
+          python scripts/genai_summarize_logs.py
+
 
       # -------------------------------------------------------
       # Generate AI release notes
@@ -259,40 +302,49 @@ jobs:
         run: |
           python scripts/genai_release_notes.py
 
-      # -------------------------------------------------------
-      # Generate AI log summary
-      # -------------------------------------------------------
-
-      - name: Generate AI log summary
-        run: |
-          python scripts/genai_summarize_logs.py
 
       # -------------------------------------------------------
-      # Upload AI-generated outputs
+      # Upload AI outputs
       # -------------------------------------------------------
 
       - name: Upload AI outputs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-outputs
           path: |
-            ai-release-notes.md
             ai-log-summary.md
+            ai-release-notes.md
             poc-context.txt
+          if-no-files-found: warn
+
 
       # -------------------------------------------------------
-      # Show AI output in workflow logs
+      # Display AI analysis in GitHub Actions
       # -------------------------------------------------------
 
-      - name: Display AI outputs
+      - name: Display AI analysis
+        if: always()
         run: |
-          echo "========================================="
-          echo "AI RELEASE NOTES"
-          echo "========================================="
-          cat ai-release-notes.md
 
           echo ""
-          echo "========================================="
-          echo "AI PIPELINE LOG SUMMARY"
-          echo "========================================="
-          cat ai-log-summary.md
+          echo "=================================================="
+          echo "AI FAILURE DIAGNOSIS & REMEDIATION"
+          echo "=================================================="
+
+          if [ -f ai-log-summary.md ]; then
+            cat ai-log-summary.md
+          else
+            echo "AI failure diagnosis was not generated."
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "AI RELEASE NOTES"
+          echo "=================================================="
+
+          if [ -f ai-release-notes.md ]; then
+            cat ai-release-notes.md
+          else
+            echo "AI release notes were not generated."
+          fi
