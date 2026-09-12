@@ -5,7 +5,10 @@ app = Flask(__name__)
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "service": "genai-poc-app"})
+    return jsonify({
+        "status": "ok",
+        "service": "genai-poc-app"
+    }), 500
 
 
 @app.route("/")
