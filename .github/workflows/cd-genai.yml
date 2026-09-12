@@ -16,7 +16,7 @@ env:
   ECR_REPOSITORY: githubactions-genai-poc
   IMAGE_TAG: ${{ github.sha }}
   OLLAMA_MODEL: qwen2.5:1.5b
-
+  
 jobs:
 
   # =========================================================

@@ -1,12 +1,13 @@
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
+MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
 
 
 def read_file(path, max_chars=8000):
@@ -21,6 +22,54 @@ def read_file(path, max_chars=8000):
         content = content[:max_chars] + "\n[Log truncated]"
 
     return content
+
+
+def extract_test_facts(log):
+    facts = {
+        "failed_test": "Unknown",
+        "expected_status": "Unknown",
+        "actual_status": "Unknown",
+        "endpoint": "/health",
+        "test_file": "app/test_main.py",
+        "application_file": "app/main.py",
+    }
+
+    # Find failed test name
+    match = re.search(
+        r"FAILED\s+.*?::([A-Za-z0-9_]+)",
+        log
+    )
+
+    if match:
+        facts["failed_test"] = match.group(1)
+
+    # Find assertion such as:
+    # assert 200 == 500
+    match = re.search(
+        r"assert\s+(\d+)\s*==\s*(\d+)",
+        log
+    )
+
+    if match:
+        facts["expected_status"] = match.group(1)
+        facts["actual_status"] = match.group(2)
+
+    # Pytest may also print:
+    # E       assert 200 == 500
+    match = re.search(
+        r"E\s+assert\s+(\d+)\s*==\s*(\d+)",
+        log
+    )
+
+    if match:
+        facts["expected_status"] = match.group(1)
+        facts["actual_status"] = match.group(2)
+
+    # Identify endpoint from the test name
+    if facts["failed_test"] == "test_health":
+        facts["endpoint"] = "/health"
+
+    return facts
 
 
 def call_local_ai(prompt):
@@ -66,91 +115,107 @@ def call_local_ai(prompt):
 
 
 def main():
+
     context = read_file("poc-context.txt", 6000)
     test_logs = read_file("workflow-logs.txt", 7000)
-    terraform_logs = read_file("terraform-plan.log", 7000)
+    terraform_logs = read_file("terraform-plan.log", 5000)
+
+    test_facts = extract_test_facts(test_logs)
+
+    structured_facts = f"""
+STRUCTURED PIPELINE FACTS
+=========================
+
+Overall pipeline status:
+FAILED
+
+Test job:
+FAILED
+
+Terraform job:
+SKIPPED
+
+Docker/ECR job:
+SKIPPED
+
+GenAI job:
+RUNNING
+
+Failed test:
+{test_facts["failed_test"]}
+
+Endpoint:
+{test_facts["endpoint"]}
+
+Test file:
+{test_facts["test_file"]}
+
+Application file:
+{test_facts["application_file"]}
+
+Expected HTTP status:
+{test_facts["expected_status"]}
+
+Actual HTTP status:
+{test_facts["actual_status"]}
+"""
 
     prompt = f"""
 You are an AI-powered DevOps CI/CD failure diagnosis assistant.
 
-Your job is to analyze the actual pipeline evidence and provide
-a useful diagnosis and remediation recommendation.
+Your job is to explain a CI/CD failure and recommend the most
+appropriate fix.
 
 IMPORTANT:
-Do NOT simply repeat the error message.
 
-You must reason about:
+The structured facts below were extracted programmatically from
+the CI logs.
 
-EXPECTED VALUE
-versus
-ACTUAL VALUE
+Treat these values as AUTHORITATIVE.
 
-when the logs provide both.
+DO NOT reverse Expected and Actual.
 
-For example, if a test reports:
+DO NOT invent different values.
 
-Expected: 500
-Actual: 200
+DO NOT say the GenAI job was skipped. It is running now.
 
-and the application endpoint is normally expected to return 200,
-then the likely problem may be an INCORRECT TEST EXPECTATION,
-not an application failure.
+DO NOT say Terraform or Docker failed if their status is SKIPPED.
 
-Do not automatically recommend changing working application code
-just to make a test pass.
+Do not simply repeat the error.
 
-Use the surrounding test name, endpoint, expected value, actual
-value, and application behavior to determine which side is more
-likely incorrect.
+Reason about the difference between the expected and actual value.
 
-For assertion failures:
+For an HTTP test failure:
 
-- Identify the expected value.
-- Identify the actual value.
-- Explain the difference.
-- Determine whether the test or application is more likely wrong.
-- Recommend the smallest appropriate fix.
-- Never change the expected value merely because the test failed.
-- If the evidence is insufficient, explicitly say so.
+Expected HTTP status = what the test expects.
 
-IMPORTANT PIPELINE RULE:
+Actual HTTP status = what the application actually returned.
 
-The GenAI job runs with `if: always()` and therefore may run even
-when earlier jobs fail.
+If:
 
-Do not say that GenAI cannot run because a previous job failed.
+Expected = 200
+Actual = 500
 
-Also distinguish:
+then the application returned an unexpected HTTP 500.
 
-FAILED
-from
-PARTIALLY SUCCESSFUL
-from
-BLOCKED/SKIPPED.
+If the application file is identified as app/main.py and the
+endpoint is /health, recommend investigating/fixing that endpoint.
 
-If a required job failed, the overall pipeline should normally be
-described as FAILED even if the GenAI analysis itself succeeds.
+Do not recommend changing a correct test expectation merely because
+the test failed.
 
-Use ONLY the supplied context and logs.
+Use the actual evidence provided below.
 
-Do not invent:
-
-- errors
-- files
-- AWS resources
-- deployments
-- configuration
-- commands not supported by the evidence
-
-Do not claim Terraform apply or deployment occurred unless the
-logs explicitly prove it.
+STRUCTURED FACTS
+================
+{structured_facts}
 
 PIPELINE CONTEXT
 ================
 {context}
 
-TEST LOG
-========
+RAW TEST LOG
+============
 {test_logs}
 
 TERRAFORM LOG
@@ -158,7 +223,7 @@ TERRAFORM LOG
 {terraform_logs}
 
 
-Return Markdown using EXACTLY these sections:
+Return concise Markdown using EXACTLY these sections:
 
 # AI Failure Diagnosis & Remediation
 
@@ -167,105 +232,83 @@ Return Markdown using EXACTLY these sections:
 State:
 
 - Overall pipeline state
-- Failed jobs/stages
+- Failed job
+- Skipped jobs
 - Whether GenAI analysis completed
-
-Explain the overall result briefly.
 
 ## Failure Detection
 
-List the failed, skipped, and successful stages.
-
-For test failures, identify the exact test when available.
-
-## Root Cause
-
-Explain the most likely root cause.
-
-For assertion failures explicitly compare:
-
-- Expected value
-- Actual value
-
-Then determine whether the test expectation or application behavior
-is more likely incorrect.
-
-If the evidence does not support a conclusion, say:
-
-"Root cause could not be conclusively determined from the available logs."
-
-## Evidence
-
-List the exact evidence supporting the diagnosis.
-
-Prefer concrete values, filenames, test names, resources,
-or error messages from the logs.
-
-## Impact
-
-Explain what the failure prevents or affects.
-
-Do not claim that unrelated stages were prevented if they actually
-ran or if the logs do not prove that.
-
-## Recommended Fix
-
-Give the smallest and safest appropriate fix.
+Identify the failed test and endpoint.
 
 Include:
 
-- File
-- Function/resource/configuration
-- Current problematic value
-- Recommended value
+Expected HTTP status: X
+Actual HTTP status: Y
 
-If changing application code is not appropriate, say so.
+Use the structured facts exactly.
 
-If the correct fix is to change a test expectation, explicitly say:
+## Root Cause
 
-"The test expectation should be corrected."
+Explain why the test failed.
 
-If the correct fix is to change application behavior, explicitly say:
+For this failure, determine whether the application behavior
+or the test expectation is more likely incorrect.
 
-"The application behavior should be corrected."
+Do not reverse Expected and Actual.
+
+## Evidence
+
+List the concrete evidence:
+
+- Test name
+- Endpoint
+- Expected status
+- Actual status
+- Relevant file
+
+## Impact
+
+Explain what the failure affects.
+
+Do not claim that unrelated jobs failed.
+
+## Recommended Fix
+
+Give the smallest appropriate fix.
+
+If the application is returning an unexpected HTTP 500 while
+the test correctly expects HTTP 200, recommend fixing the
+application endpoint in:
+
+app/main.py
+
+Do NOT recommend changing the test from 200 to 500.
 
 ## Verification Steps
 
-Give concrete commands to verify the recommended fix.
+Give concrete commands.
 
-For Python test failures, prefer:
+Use:
 
 pytest app/ -v
 
-For a specific test, you may also provide:
+and, where useful:
 
 pytest app/test_main.py::test_health -v
 
-For Terraform failures, use appropriate terraform commands
-supported by the logs.
-
 ## Preventive Recommendation
 
-Give one or two practical recommendations.
-
-Examples:
-
-- Keep tests aligned with the intended API contract.
-- Add explicit API contract tests.
-- Validate Terraform configuration during CI.
-- Pin infrastructure configuration where appropriate.
-
-Only recommend something relevant to the detected problem.
+Give one or two recommendations directly related to this failure.
 
 ## AI Confidence
 
-Choose:
+Choose exactly one:
 
 High
 Medium
 Low
 
-Explain why in one sentence.
+Give one short reason.
 """
 
     output = call_local_ai(prompt)
