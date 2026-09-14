@@ -34,7 +34,7 @@ def extract_test_facts(log):
         "application_file": "app/main.py",
     }
 
-    # Find failed test name
+    # Find failed test
     match = re.search(
         r"FAILED\s+.*?::([A-Za-z0-9_]+)",
         log
@@ -43,8 +43,7 @@ def extract_test_facts(log):
     if match:
         facts["failed_test"] = match.group(1)
 
-    # Find assertion such as:
-    # assert 200 == 500
+    # Extract expected and actual values
     match = re.search(
         r"assert\s+(\d+)\s*==\s*(\d+)",
         log
@@ -54,18 +53,6 @@ def extract_test_facts(log):
         facts["expected_status"] = match.group(1)
         facts["actual_status"] = match.group(2)
 
-    # Pytest may also print:
-    # E       assert 200 == 500
-    match = re.search(
-        r"E\s+assert\s+(\d+)\s*==\s*(\d+)",
-        log
-    )
-
-    if match:
-        facts["expected_status"] = match.group(1)
-        facts["actual_status"] = match.group(2)
-
-    # Identify endpoint from the test name
     if facts["failed_test"] == "test_health":
         facts["endpoint"] = "/health"
 
@@ -120,185 +107,105 @@ def main():
     test_logs = read_file("workflow-logs.txt", 7000)
     terraform_logs = read_file("terraform-plan.log", 5000)
 
-    test_facts = extract_test_facts(test_logs)
+    facts = extract_test_facts(test_logs)
+
+    # Pipeline facts
+    pipeline_status = "FAILED"
+    failed_job = "test"
+    terraform_status = "SKIPPED"
+    docker_status = "SKIPPED"
+    genai_status = "COMPLETED"
 
     structured_facts = f"""
-STRUCTURED PIPELINE FACTS
-=========================
+PIPELINE FACTS
 
-Overall pipeline status:
-FAILED
+Pipeline status: {pipeline_status}
+Failed job: {failed_job}
+Failed test: {facts["failed_test"]}
 
-Test job:
-FAILED
+Terraform: {terraform_status}
+Docker/ECR: {docker_status}
+GenAI: {genai_status}
 
-Terraform job:
-SKIPPED
+Endpoint: {facts["endpoint"]}
+Expected HTTP status: {facts["expected_status"]}
+Actual HTTP status: {facts["actual_status"]}
 
-Docker/ECR job:
-SKIPPED
-
-GenAI job:
-RUNNING
-
-Failed test:
-{test_facts["failed_test"]}
-
-Endpoint:
-{test_facts["endpoint"]}
-
-Test file:
-{test_facts["test_file"]}
-
-Application file:
-{test_facts["application_file"]}
-
-Expected HTTP status:
-{test_facts["expected_status"]}
-
-Actual HTTP status:
-{test_facts["actual_status"]}
+Application file: {facts["application_file"]}
+Test file: {facts["test_file"]}
 """
 
     prompt = f"""
-You are an AI-powered DevOps CI/CD failure diagnosis assistant.
+You are an AI-powered DevOps failure diagnosis assistant.
 
-Your job is to explain a CI/CD failure and recommend the most
-appropriate fix.
+The following pipeline facts were extracted by Python.
+Treat them as authoritative.
 
-IMPORTANT:
+Do not change or reverse these values.
 
-The structured facts below were extracted programmatically from
-the CI logs.
+Expected HTTP status: {facts["expected_status"]}
+Actual HTTP status: {facts["actual_status"]}
 
-Treat these values as AUTHORITATIVE.
+Failed job: {failed_job}
+Failed test: {facts["failed_test"]}
 
-DO NOT reverse Expected and Actual.
+Terraform: {terraform_status}
+Docker/ECR: {docker_status}
+GenAI: {genai_status}
 
-DO NOT invent different values.
+Do not say GenAI was skipped.
+Do not say Terraform or Docker failed.
+Do not reverse expected and actual values.
 
-DO NOT say the GenAI job was skipped. It is running now.
+Explain the failure and recommend the correct fix.
 
-DO NOT say Terraform or Docker failed if their status is SKIPPED.
+If the application returns HTTP 500 while the test expects
+HTTP 200, recommend fixing app/main.py rather than changing
+the test.
 
-Do not simply repeat the error.
-
-Reason about the difference between the expected and actual value.
-
-For an HTTP test failure:
-
-Expected HTTP status = what the test expects.
-
-Actual HTTP status = what the application actually returned.
-
-If:
-
-Expected = 200
-Actual = 500
-
-then the application returned an unexpected HTTP 500.
-
-If the application file is identified as app/main.py and the
-endpoint is /health, recommend investigating/fixing that endpoint.
-
-Do not recommend changing a correct test expectation merely because
-the test failed.
-
-Use the actual evidence provided below.
-
-STRUCTURED FACTS
-================
+PIPELINE FACTS
+==============
 {structured_facts}
 
 PIPELINE CONTEXT
 ================
 {context}
 
-RAW TEST LOG
-============
+TEST LOG
+========
 {test_logs}
 
 TERRAFORM LOG
 =============
 {terraform_logs}
 
-
-Return concise Markdown using EXACTLY these sections:
-
-# AI Failure Diagnosis & Remediation
-
-## Overall Assessment
-
-State:
-
-- Overall pipeline state
-- Failed job
-- Skipped jobs
-- Whether GenAI analysis completed
-
-## Failure Detection
-
-Identify the failed test and endpoint.
-
-Include:
-
-Expected HTTP status: X
-Actual HTTP status: Y
-
-Use the structured facts exactly.
+Return only these sections:
 
 ## Root Cause
 
-Explain why the test failed.
-
-For this failure, determine whether the application behavior
-or the test expectation is more likely incorrect.
-
-Do not reverse Expected and Actual.
-
-## Evidence
-
-List the concrete evidence:
-
-- Test name
-- Endpoint
-- Expected status
-- Actual status
-- Relevant file
+Explain the root cause using the facts.
 
 ## Impact
 
 Explain what the failure affects.
 
-Do not claim that unrelated jobs failed.
-
 ## Recommended Fix
 
 Give the smallest appropriate fix.
 
-If the application is returning an unexpected HTTP 500 while
-the test correctly expects HTTP 200, recommend fixing the
-application endpoint in:
-
-app/main.py
-
-Do NOT recommend changing the test from 200 to 500.
-
 ## Verification Steps
 
-Give concrete commands.
-
-Use:
-
-pytest app/ -v
-
-and, where useful:
+Include:
 
 pytest app/test_main.py::test_health -v
 
+and:
+
+pytest app/ -v
+
 ## Preventive Recommendation
 
-Give one or two recommendations directly related to this failure.
+Give one or two practical recommendations.
 
 ## AI Confidence
 
@@ -311,13 +218,43 @@ Low
 Give one short reason.
 """
 
-    output = call_local_ai(prompt)
+    ai_reasoning = call_local_ai(prompt)
 
-    Path("ai-log-summary.md").write_text(output)
+    report = f"""# AI Failure Diagnosis & Remediation
+
+## Overall Assessment
+
+- Overall pipeline state: {pipeline_status}
+- Failed GitHub Actions job: {failed_job}
+- Failed test: {facts["failed_test"]}
+- Skipped jobs: Terraform Plan, Docker/ECR
+- GenAI analysis completed: Yes
+
+## Failure Detection
+
+- Endpoint: {facts["endpoint"]}
+- Expected HTTP status: {facts["expected_status"]}
+- Actual HTTP status: {facts["actual_status"]}
+- Application file: {facts["application_file"]}
+- Test file: {facts["test_file"]}
+
+## Evidence
+
+- Test: `{facts["failed_test"]}`
+- Endpoint: `{facts["endpoint"]}`
+- Expected: `{facts["expected_status"]}`
+- Actual: `{facts["actual_status"]}`
+- Application: `{facts["application_file"]}`
+- Test: `{facts["test_file"]}`
+
+{ai_reasoning}
+"""
+
+    Path("ai-log-summary.md").write_text(report)
 
     print("AI failure diagnosis generated successfully.")
     print()
-    print(output)
+    print(report)
 
 
 if __name__ == "__main__":
