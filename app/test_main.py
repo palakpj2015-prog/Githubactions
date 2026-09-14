@@ -13,10 +13,10 @@ def client():
 def test_health(client):
     resp = client.get("/health")
     assert resp.status_code == 200
-    #assert resp.status_code == 500     #for negative testing
     data = resp.get_json()
     assert data["status"] == "ok"
-    assert data["service"] == "genai-poc-app"
+    #assert data["service"] == "genai-poc-app"
+    assert data["service"] == "wrong-service"  #for negative testing
 
 def test_index(client):
     resp = client.get("/")
