@@ -43,15 +43,28 @@ def extract_test_facts(log):
     if match:
         facts["failed_test"] = match.group(1)
 
-    # Extract expected and actual values
+    # Read expected status from test
+    test_path = Path(facts["test_file"])
+
+    if test_path.exists():
+        test_code = test_path.read_text(errors="ignore")
+
+        match = re.search(
+            r"test_health[\s\S]*?assert\s+resp\.status_code\s*==\s*(\d+)",
+            test_code
+        )
+
+        if match:
+            facts["expected_status"] = match.group(1)
+
+    # Read actual status from pytest output
     match = re.search(
         r"assert\s+(\d+)\s*==\s*(\d+)",
         log
     )
 
     if match:
-        facts["expected_status"] = match.group(1)
-        facts["actual_status"] = match.group(2)
+        facts["actual_status"] = match.group(1)
 
     if facts["failed_test"] == "test_health":
         facts["endpoint"] = "/health"
@@ -102,7 +115,6 @@ def call_local_ai(prompt):
 
 
 def main():
-
     context = read_file("poc-context.txt", 6000)
     test_logs = read_file("workflow-logs.txt", 7000)
     terraform_logs = read_file("terraform-plan.log", 5000)
@@ -139,9 +151,10 @@ Test file: {facts["test_file"]}
 You are an AI-powered DevOps failure diagnosis assistant.
 
 The following pipeline facts were extracted by Python.
-Treat them as authoritative.
 
-Do not change or reverse these values.
+Treat these facts as authoritative.
+
+Do not change, reverse, or invent them.
 
 Expected HTTP status: {facts["expected_status"]}
 Actual HTTP status: {facts["actual_status"]}
@@ -160,8 +173,10 @@ Do not reverse expected and actual values.
 Explain the failure and recommend the correct fix.
 
 If the application returns HTTP 500 while the test expects
-HTTP 200, recommend fixing app/main.py rather than changing
-the test.
+HTTP 200, recommend fixing app/main.py instead of changing
+the test expectation.
+
+Use only the evidence provided.
 
 PIPELINE FACTS
 ==============
@@ -183,7 +198,7 @@ Return only these sections:
 
 ## Root Cause
 
-Explain the root cause using the facts.
+Explain why the test failed.
 
 ## Impact
 
@@ -192,6 +207,12 @@ Explain what the failure affects.
 ## Recommended Fix
 
 Give the smallest appropriate fix.
+
+For an HTTP 500 returned by app/main.py when the test expects
+HTTP 200, recommend changing app/main.py so the /health
+endpoint returns HTTP 200.
+
+Do not recommend changing the test expectation.
 
 ## Verification Steps
 
