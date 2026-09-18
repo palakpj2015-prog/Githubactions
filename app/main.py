@@ -9,8 +9,6 @@ def health():
         "status": "ok",
         "service": "genai-poc-app"
     }), 200
-      #changed it to 500 for negative testing
-
 
 @app.route("/")
 def index():
