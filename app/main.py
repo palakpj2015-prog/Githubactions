@@ -8,8 +8,8 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "genai-poc-app"
-    }), 200
-    #changed it to 500 for negative testing
+    }), 500
+      #changed it to 500 for negative testing
 
 
 @app.route("/")
